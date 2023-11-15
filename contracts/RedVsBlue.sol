@@ -14,7 +14,7 @@ contract RedVsBlue is
 
     //Protocol constants
     uint256 public constant protocolFee = 0.02 ether; // 2%
-    uint256 public constant GAME_DURATION = 30 minutes;
+    uint256 public constant GAME_DURATION = 5 minutes;
 
     //Chainlink VRF constants
     uint32 callbackGasLimit = 100000;
