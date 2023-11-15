@@ -7,7 +7,10 @@ import "@chainlink/contracts/src/v0.8/vrf/VRFV2WrapperConsumerBase.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 
-contract RedVsBlue is VRFV2WrapperConsumerBase {
+contract RedVsBlue is 
+    Ownable,
+    VRFV2WrapperConsumerBase
+{
 
     //Protocol constants
     uint256 public constant protocolFee = 0.02 ether; // 2%
@@ -60,6 +63,7 @@ contract RedVsBlue is VRFV2WrapperConsumerBase {
 
     modifier canContributeRound() {
         require(block.timestamp < gameEndTime, "Contribution time has ended");
+        require(rounds[currentRound].status == RoundState.Open, "Round not open yet");
         require(!rounds[currentRound].ended, "Current round has ended");
         _;
     }
@@ -76,6 +80,7 @@ contract RedVsBlue is VRFV2WrapperConsumerBase {
         _;
     }
     constructor() 
+        Ownable(msg.sender)
         VRFV2WrapperConsumerBase(linkAddress, wrapperAddress)
     {
         protocolFeeDestination = msg.sender;
@@ -100,6 +105,13 @@ contract RedVsBlue is VRFV2WrapperConsumerBase {
         Round storage round = rounds[currentRound];
         round.status = RoundState.FetchingRandomNumber;
 
+        //make sure round has contributions
+        if (round.totalRed == 0 && round.totalBlue == 0) {
+            round.status = RoundState.None;
+            _startNewRound();
+            return;
+        }
+
         uint requestId = requestRandomness(
             callbackGasLimit,
             requestConfirmations,
@@ -111,6 +123,11 @@ contract RedVsBlue is VRFV2WrapperConsumerBase {
             paid: VRF_V2_WRAPPER.calculateRequestPrice(callbackGasLimit),
             randomWords: new uint256[](numWords)
         });
+
+        //send fee to protocol fee destination
+        uint256 fee = (round.totalRed + round.totalBlue) * protocolFee / 1 ether;
+        (bool success, ) = payable(protocolFeeDestination).call{value: fee}("");
+        require(success, "Transfer failed.");
 
         emit FetchingRandomNumber(currentRound);
     }
@@ -159,22 +176,24 @@ contract RedVsBlue is VRFV2WrapperConsumerBase {
         emit RoundStarted(currentRound, block.timestamp, gameEndTime);
     }
 
+
     function rewards(uint256 roundNumber, address user) public view returns (uint256) {
         Round storage round = rounds[roundNumber];
         if (!round.ended) {
             return 0; // No rewards if the round hasn't ended
         }
 
-        uint256 userContribution;
+        uint256 share;
         uint256 totalPot = round.totalRed + round.totalBlue;
+        uint256 totalPotAfterFee = totalPot - ((totalPot * protocolFee) / 1 ether);
         if (round.status == RoundState.RedWins) { // Red wins
-            userContribution = round.redContributions[user];
+            share = round.redContributions[user] * 1 ether / round.totalRed;
         } else if (round.status == RoundState.BlueWins) { // Blue wins
-            userContribution = round.blueContributions[user];
+            share = round.blueContributions[user] * 1 ether / round.totalBlue;
         }
 
-        if (userContribution > 0) {
-            return (userContribution / (round.status == RoundState.RedWins ? round.totalRed : round.totalBlue)) * totalPot;
+        if (share > 0) {
+            return (share * totalPotAfterFee) / 1 ether;
         } else {
             return 0;
         }
@@ -197,6 +216,15 @@ contract RedVsBlue is VRFV2WrapperConsumerBase {
         //use call instead
         (bool success, ) = payable(msg.sender).call{value: claimableAmount}("");
         require(success, "Transfer failed.");
+    }
+
+
+    function withdrawLink() public onlyOwner {
+        LinkTokenInterface link = LinkTokenInterface(linkAddress);
+        require(
+            link.transfer(msg.sender, link.balanceOf(address(this))),
+            "Unable to transfer"
+        );
     }
 
     
