@@ -36,7 +36,8 @@ contract RedVsBlue is
         Open,
         FetchingRandomNumber, // Fetching random words
         RedWins,
-        BlueWins
+        BlueWins,
+        NoContest
     }
 
     struct VrfRequestStatus {
@@ -46,8 +47,6 @@ contract RedVsBlue is
     }
 
     struct Round {
-        mapping(address => uint256) redContributions;
-        mapping(address => uint256) blueContributions;
         uint256 totalRed;
         uint256 totalBlue;
         bool ended;
@@ -60,6 +59,8 @@ contract RedVsBlue is
     uint256 public gameEndTime;
     uint256 public currentRound = 0;
     mapping(uint256 => Round) public rounds;
+    mapping(uint256 => mapping(address => uint256)) public redContributions;
+    mapping(uint256 => mapping(address => uint256)) public blueContributions;
 
     modifier canContributeRound() {
         require(block.timestamp < gameEndTime, "Contribution time has ended");
@@ -89,14 +90,14 @@ contract RedVsBlue is
  
     function contributeToRed() external payable canContributeRound {
         Round storage round = rounds[currentRound];
-        round.redContributions[msg.sender] += msg.value;
+        redContributions[currentRound][msg.sender] += msg.value;
         round.totalRed += msg.value;
         emit Contribution(msg.sender, msg.value, true);
     }
 
     function contributeToBlue() external payable canContributeRound {
         Round storage round = rounds[currentRound];
-        round.blueContributions[msg.sender] += msg.value;
+        blueContributions[currentRound][msg.sender] += msg.value;
         round.totalBlue += msg.value;
         emit Contribution(msg.sender, msg.value, false);
     }
@@ -105,9 +106,19 @@ contract RedVsBlue is
         Round storage round = rounds[currentRound];
         round.status = RoundState.FetchingRandomNumber;
 
+        //send fee to protocol fee destination
+        uint256 fee = (round.totalRed + round.totalBlue) * protocolFee / 1 ether;
+
+        if (fee > 0) {
+            (bool success, ) = payable(protocolFeeDestination).call{value: fee}("");
+            require(success, "Transfer failed.");
+        }
+
         //make sure round has contributions
-        if (round.totalRed == 0 && round.totalBlue == 0) {
-            round.status = RoundState.None;
+        if (round.totalRed == 0 || round.totalBlue == 0){
+            round.ended = true;
+            round.status = RoundState.NoContest;
+            emit RoundEnded(currentRound, round.status, round.totalRed, round.totalBlue);
             _startNewRound();
             return;
         }
@@ -123,11 +134,6 @@ contract RedVsBlue is
             paid: VRF_V2_WRAPPER.calculateRequestPrice(callbackGasLimit),
             randomWords: new uint256[](numWords)
         });
-
-        //send fee to protocol fee destination
-        uint256 fee = (round.totalRed + round.totalBlue) * protocolFee / 1 ether;
-        (bool success, ) = payable(protocolFeeDestination).call{value: fee}("");
-        require(success, "Transfer failed.");
 
         emit FetchingRandomNumber(currentRound);
     }
@@ -183,20 +189,33 @@ contract RedVsBlue is
             return 0; // No rewards if the round hasn't ended
         }
 
+        if (round.status == RoundState.NoContest) {
+            uint256 totalUserContributions = redContributions[roundNumber][user] + blueContributions[roundNumber][user];
+            return totalUserContributions - ((totalUserContributions * protocolFee) / 1 ether);
+        }
+
         uint256 share;
         uint256 totalPot = round.totalRed + round.totalBlue;
         uint256 totalPotAfterFee = totalPot - ((totalPot * protocolFee) / 1 ether);
         if (round.status == RoundState.RedWins) { // Red wins
-            share = round.redContributions[user] * 1 ether / round.totalRed;
+            share = redContributions[roundNumber][user] * 1 ether / round.totalRed;
         } else if (round.status == RoundState.BlueWins) { // Blue wins
-            share = round.blueContributions[user] * 1 ether / round.totalBlue;
-        }
+            share = blueContributions[roundNumber][user] * 1 ether / round.totalBlue;
+        } 
 
         if (share > 0) {
             return (share * totalPotAfterFee) / 1 ether;
         } else {
             return 0;
         }
+    }
+
+    function viewTotalRewards(address user) public view returns (uint256) {
+        uint256 totalRewards = 0;
+        for (uint256 index = 0; index < currentRound; index++) {
+            totalRewards += rewards(index, user);
+        }
+        return totalRewards;
     }
 
     function claimReward(uint256 roundNumber) isRoundOver(roundNumber) external {
@@ -206,17 +225,29 @@ contract RedVsBlue is
         uint256 claimableAmount = rewards(roundNumber, msg.sender);
         require(claimableAmount > 0, "No rewards to claim");
 
-        if (round.status == RoundState.RedWins) {
-            round.redContributions[msg.sender] = 0;
-        } else if (round.status == RoundState.BlueWins) {
-            round.blueContributions[msg.sender] = 0;
-        }
+        redContributions[roundNumber][msg.sender] = 0;
+        blueContributions[roundNumber][msg.sender] = 0;
 
         //payable(msg.sender).transfer(claimableAmount);
         //use call instead
         (bool success, ) = payable(msg.sender).call{value: claimableAmount}("");
         require(success, "Transfer failed.");
     }
+
+    function claimRewardsFromRounds(uint256[] calldata roundNumbers) external {
+        uint256 totalRewards = 0;
+        for (uint256 index = 0; index < roundNumbers.length; index++) {
+            uint256 roundNumber = roundNumbers[index];
+            totalRewards += rewards(roundNumber, msg.sender);
+            Round storage round = rounds[roundNumber];
+            redContributions[roundNumber][msg.sender] = 0;
+            blueContributions[roundNumber][msg.sender] = 0;
+
+        }
+        (bool success, ) = payable(msg.sender).call{value: totalRewards}("");
+        require(success, "Transfer failed.");
+    } 
+
 
 
     function withdrawLink() public onlyOwner {
