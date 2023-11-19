@@ -64,9 +64,9 @@ contract RedVsBlue is
     event FetchingRandomNumber(uint256 roundNumber);
     event RandomNumberReceived(uint256 roundNumber, uint256 randomNumber);
     event RoundStarted(uint256 roundNumber, uint256 startTime, uint256 endTime);
+    event RoundColorDeduction(uint256 roundNumber, ColorTypes color, uint256 deduction);
     event RoundEnded(uint256 roundNumber, RoundState status, ColorTypes winner, uint256 reward);
     event Trade(address trader, ColorTypes color, bool isBuy, uint256 shareAmount, uint256 ethAmount, uint256 protocolEthAmount, uint256 supply);
-
 
     //dApp state variables
     address public protocolFeeDestination;
@@ -238,6 +238,7 @@ contract RedVsBlue is
             uint256 deduction = color.value * deductionFee / 1 ether;
             colors[colorType].value = color.value - deduction;
             reward += deduction;
+            emit RoundColorDeduction(currentRound, colorType, deduction);
         }
 
         //pay the winner
