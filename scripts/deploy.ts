@@ -1,11 +1,11 @@
 import { ethers } from 'hardhat';
 
 async function main() {
-  const redVsBlue = await ethers.deployContract('RedVsBlue');
+  const colorClash = await ethers.deployContract('ColorClash');
 
-  await redVsBlue.waitForDeployment();
+  await colorClash.waitForDeployment();
 
-  console.log('Bubbles Contract Deployed at ' + redVsBlue.target);
+  console.log('Colors Contract Deployed at ' + colorClash.target);
 }
 
 // We recommend this pattern to be able to use async/await everywhere
