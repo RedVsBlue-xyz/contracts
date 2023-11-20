@@ -7,18 +7,18 @@ import "@chainlink/contracts/src/v0.8/vrf/VRFV2WrapperConsumerBase.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 
-contract RedVsBlue is 
+contract ColorClash is 
     Ownable,
     VRFV2WrapperConsumerBase
 {
 
     //Protocol constants
-    uint256 public constant protocolFee = 0.02 ether; // 2%
+    uint256 public constant protocolFeePercent = 0.02 ether; // 2%
     uint256 public constant deductionFee = 0.1 ether; // 10%
     uint256 public constant GAME_DURATION = 5 minutes;
 
     //Chainlink VRF constants
-    uint32 callbackGasLimit = 100000;
+    uint32 callbackGasLimit = 1000000;
     uint16 requestConfirmations = 3;
     uint32 numWords = 1;
     address linkAddress = 0xd14838A68E8AFBAdE5efb411d5871ea0011AFd28;
@@ -32,7 +32,8 @@ contract RedVsBlue is
         Green,
         Blue,
         Indigo,
-        Violet
+        Violet,
+        None
     }
 
     enum RoundState {
@@ -52,6 +53,7 @@ contract RedVsBlue is
     struct Round {
         bool ended;
         RoundState status;
+        ColorTypes winner;
         VrfRequestStatus vrfRequestStatus;
     }
 
@@ -75,7 +77,7 @@ contract RedVsBlue is
     uint256 public totalValueDeposited;
     mapping(uint256 => Round) public rounds;
     mapping(ColorTypes => Color) public colors;
-    mapping(ColorsTypes => mapping(address => uint256)) public colorSharesBalance;
+    mapping(ColorTypes => mapping(address => uint256)) public colorSharesBalance;
 
     modifier canContributeRound() {
         require(block.timestamp < gameEndTime, "Contribution time has ended");
@@ -112,9 +114,15 @@ contract RedVsBlue is
     }
 
     function getScalingFactor(ColorTypes color) public view returns (uint256) {
-        uint256 xf = colors[color].supply-1;
-        uint256 originalValue = getPrice(1, xf <= 0 ? 0 : xf);
-        uint256 scalingFactor = colors[color].value / originalValue;
+        uint256 xf = colors[color].supply > 1 ? colors[color].supply - 1 : 0;
+        uint256 originalValue = getPrice(1, xf);
+        
+        // Check to prevent division by zero
+        if (originalValue == 0) {
+            return 1 ether; // Return default scaling factor if original value is zero
+        }
+        
+        uint256 scalingFactor = colors[color].value * 1 ether / originalValue;
         return scalingFactor == 0 ? 1 ether : scalingFactor;
     }
 
@@ -124,42 +132,42 @@ contract RedVsBlue is
     }
 
     function getBuyPrice(ColorTypes color, uint256 amount) public view returns (uint256) {
-        uint256 scalingFactor = getScalingFactor(bubbleAddress);
+        uint256 scalingFactor = getScalingFactor(color);
         return getAdjustedPrice(colors[color].supply, amount, scalingFactor);
     }
 
     function getSellPrice(ColorTypes color, uint256 amount) public view returns (uint256) {
-        uint256 scalingFactor = getScalingFactor(bubbleAddress);
+        uint256 scalingFactor = getScalingFactor(color);
         return getAdjustedPrice(colors[color].supply - amount, amount, scalingFactor);
     }
 
     function getBuyPriceAfterFee(ColorTypes color, uint256 amount) public view returns (uint256) {
-        uint256 price = getBuyPrice(bubbleAddress, amount);
+        uint256 price = getBuyPrice(color, amount);
         uint256 protocolFee = price * protocolFeePercent / 1 ether;
         return price + protocolFee;
     }
 
-    function getSellPriceAfterFee(address bubbleAddress, uint256 amount) public view returns (uint256) {
-        uint256 price = getSellPrice(bubbleAddress, amount);
+    function getSellPriceAfterFee(ColorTypes color, uint256 amount) public view returns (uint256) {
+        uint256 price = getSellPrice(color, amount);
         uint256 protocolFee = price * protocolFeePercent / 1 ether;
         return price - protocolFee;
     }
 
-    function buyShares(ColorTypes color, uint256 amount) public payable canTrade(bubbleTier[bubbleAddress]) {
+    function buyShares(ColorTypes color, uint256 amount) public payable {
         uint256 supply = colors[color].supply;
         uint256 price = getBuyPrice(color, amount);
         uint256 protocolFee = price * protocolFeePercent / 1 ether;
         require(msg.value >= price + protocolFee, "Insufficient payment");
-        colorSharesBalance[colors][msg.sender] = colorSharesBalance[color][msg.sender] + amount;
-        colors[colors].supply = supply + amount;
-        colors[colors].value = colors[colors].value + price;
+        colorSharesBalance[color][msg.sender] = colorSharesBalance[color][msg.sender] + amount;
+        colors[color].supply = supply + amount;
+        colors[color].value = colors[color].value + price;
         totalValueDeposited = totalValueDeposited + price;
         emit Trade(msg.sender, color, true, amount, price, protocolFee, supply + amount);
         (bool success1, ) = protocolFeeDestination.call{value: protocolFee}("");
         require(success1, "Unable to send funds");
     }
 
-    function sellShares(ColorTypes color, uint256 amount) public payable canTrade(bubbleTier[bubbleAddress]) {
+    function sellShares(ColorTypes color, uint256 amount) public payable {
         uint256 supply = colors[color].supply;
         require(supply > amount, "Cannot sell the last share");
         uint256 price = getSellPrice(color, amount);
@@ -181,7 +189,7 @@ contract RedVsBlue is
 
         //Confirm at least two colors have contributions
         uint256 contributingColors = 0;
-        for (uint256 index = 0; index < ColorTypes.length; index++) {
+        for (uint256 index = 0; index < 7; index++) {
             ColorTypes colorType = ColorTypes(index);
             Color memory color = colors[colorType];
 
@@ -192,7 +200,7 @@ contract RedVsBlue is
         if (contributingColors == 0) {
             round.status = RoundState.NoContest;
             round.ended = true;
-            emit RoundEnded(currentRound, round.status, ColorTypes.None);
+            emit RoundEnded(currentRound, round.status, ColorTypes.None, 0);
             _startNewRound();
             return;
         }
@@ -221,31 +229,19 @@ contract RedVsBlue is
         require(round.vrfRequestStatus.requestId == _requestId, "Request ID mismatch");
         round.vrfRequestStatus.randomWords = _randomWords;
 
-        uint256 accumulatedValue = 0;
-        uint256 reward = 0;
-        for (uint256 index = 0; index < ColorTypes.length; index++) {
-            ColorTypes colorType = ColorTypes(index);
-            Color memory color = colors[colorType];
-            accumulatedValue += color.value;
-
-            if (accumulatedValue > randomThreshold) {
-                round.status = RoundState.Finished;
-                round.winner = colorType;
-                continue;
-            }
-
-            //deduct 10% of the value from the color
-            uint256 deduction = color.value * deductionFee / 1 ether;
-            colors[colorType].value = color.value - deduction;
-            reward += deduction;
-            emit RoundColorDeduction(currentRound, colorType, deduction);
-        }
-
-        //pay the winner
-        colors[round.winner].value += reward;
-
         emit RandomNumberReceived(currentRound, _randomWords[0]);
 
+        _determineWinner();
+        _startNewRound();
+    }
+
+    function testFulfillRandomWords(
+        uint256 _randomWord
+    ) public {
+        Round storage round = rounds[currentRound];
+        round.vrfRequestStatus.randomWords = new uint256[](numWords);
+        round.vrfRequestStatus.randomWords[0] = _randomWord;
+        emit RandomNumberReceived(currentRound, _randomWord);
         _determineWinner();
         _startNewRound();
     }
@@ -259,9 +255,34 @@ contract RedVsBlue is
         round.ended = true;
         uint256 randomThreshold = randomNumber % totalValueDeposited;
 
-        
+        uint256 accumulatedValue = 0;
+        uint256 reward = 0;
+        uint256 i = 0;
+        while(i < 7){
+            ColorTypes colorType = ColorTypes(i);
+            Color memory color = colors[colorType];
+            accumulatedValue += color.value;
 
-        emit RoundEnded(currentRound, round.status, ColorTypes.None);
+            if (accumulatedValue > randomThreshold) {
+                round.winner = colorType;
+                i++;
+                continue;
+            } 
+            
+            //deduct 10% of the value from the color
+            uint256 deduction = color.value * deductionFee / 1 ether;
+            colors[colorType].value = color.value - deduction;
+            reward += deduction;
+            emit RoundColorDeduction(currentRound, colorType, deduction);
+            i++;
+            
+        }
+
+        //pay the winner
+        colors[round.winner].value += reward;
+        round.status = RoundState.Finished;
+
+        emit RoundEnded(currentRound, round.status, round.winner, reward);
     }
 
     function _startNewRound() private {
