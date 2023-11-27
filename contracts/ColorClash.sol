@@ -14,8 +14,8 @@ contract ColorClash is
 
     //Protocol constants
     uint256 public constant protocolFeePercent = 0.02 ether; // 2%
-    uint256 public constant deductionFee = 0.1 ether; // 10%
-    uint256 public constant GAME_DURATION = 5 minutes;
+    uint256 public constant deductionFee = 0.3 ether; // 30%
+    uint256 public constant GAME_DURATION = 60 minutes; // 1 hour
 
     //Chainlink VRF constants
     uint32 callbackGasLimit = 1000000;
@@ -66,9 +66,9 @@ contract ColorClash is
     event FetchingRandomNumber(uint256 roundNumber);
     event RandomNumberReceived(uint256 roundNumber, uint256 randomNumber);
     event RoundStarted(uint256 roundNumber, uint256 startTime, uint256 endTime);
-    event RoundColorDeduction(uint256 roundNumber, ColorTypes color, uint256 deduction);
-    event RoundEnded(uint256 roundNumber, RoundState status, ColorTypes winner, uint256 reward);
-    event Trade(address trader, ColorTypes color, bool isBuy, uint256 shareAmount, uint256 ethAmount, uint256 protocolEthAmount, uint256 supply);
+    event RoundColorDeduction(uint256 roundNumber, ColorTypes color, uint256 deduction, uint256 value);
+    event RoundEnded(uint256 roundNumber, RoundState status, ColorTypes winner, uint256 reward, uint256 value);
+    event Trade(address trader, ColorTypes color, bool isBuy, uint256 shareAmount, uint256 ethAmount, uint256 protocolEthAmount, uint256 supply, uint256 value);
 
     //dApp state variables
     address public protocolFeeDestination;
@@ -162,7 +162,7 @@ contract ColorClash is
         colors[color].supply = supply + amount;
         colors[color].value = colors[color].value + price;
         totalValueDeposited = totalValueDeposited + price;
-        emit Trade(msg.sender, color, true, amount, price, protocolFee, supply + amount);
+        emit Trade(msg.sender, color, true, amount, price, protocolFee, supply + amount, colors[color].value);
         (bool success1, ) = protocolFeeDestination.call{value: protocolFee}("");
         require(success1, "Unable to send funds");
     }
@@ -177,7 +177,7 @@ contract ColorClash is
         colors[color].supply = supply - amount;
         colors[color].value = colors[color].value - price;
         totalValueDeposited = totalValueDeposited - price;
-        emit Trade(msg.sender, color, false, amount, price, protocolFee, supply - amount);
+        emit Trade(msg.sender, color, false, amount, price, protocolFee, supply - amount, colors[color].value);
         (bool success1, ) = msg.sender.call{value: price - protocolFee}("");
         (bool success2, ) = protocolFeeDestination.call{value: protocolFee}("");
         require(success1 && success2, "Unable to send funds");
@@ -200,7 +200,7 @@ contract ColorClash is
         if (contributingColors == 0) {
             round.status = RoundState.NoContest;
             round.ended = true;
-            emit RoundEnded(currentRound, round.status, ColorTypes.None, 0);
+            emit RoundEnded(currentRound, round.status, ColorTypes.None, 0, 0);
             _startNewRound();
             return;
         }
@@ -263,7 +263,7 @@ contract ColorClash is
             Color memory color = colors[colorType];
             accumulatedValue += color.value;
 
-            if (accumulatedValue > randomThreshold) {
+            if (round.winner==ColorTypes.None && accumulatedValue > randomThreshold) {
                 round.winner = colorType;
                 i++;
                 continue;
@@ -273,7 +273,7 @@ contract ColorClash is
             uint256 deduction = color.value * deductionFee / 1 ether;
             colors[colorType].value = color.value - deduction;
             reward += deduction;
-            emit RoundColorDeduction(currentRound, colorType, deduction);
+            emit RoundColorDeduction(currentRound, colorType, deduction, colors[colorType].value);
             i++;
             
         }
@@ -282,13 +282,15 @@ contract ColorClash is
         colors[round.winner].value += reward;
         round.status = RoundState.Finished;
 
-        emit RoundEnded(currentRound, round.status, round.winner, reward);
+        emit RoundEnded(currentRound, round.status, round.winner, reward, colors[round.winner].value);
     }
 
     function _startNewRound() private {
         currentRound++;
         gameEndTime = block.timestamp + GAME_DURATION;
         rounds[currentRound].status = RoundState.Open;
+        rounds[currentRound].ended = false;
+        rounds[currentRound].winner = ColorTypes.None;
         emit RoundStarted(currentRound, block.timestamp, gameEndTime);
     }
 
