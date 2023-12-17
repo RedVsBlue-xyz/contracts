@@ -14,15 +14,15 @@ contract ColorClash is
 
     //Protocol constants
     uint256 public constant protocolFeePercent = 0.02 ether; // 2%
-    uint256 public constant deductionFee = 0.3 ether; // 30%
-    uint256 public constant GAME_DURATION = 60 minutes; // 1 hour
+    uint256 public constant deductionFee = 0.1 ether; // 10%
+    uint256 public constant GAME_DURATION = 6 hours - 1 minutes; // 6 hours
 
     //Chainlink VRF constants
     uint32 callbackGasLimit = 1000000;
     uint16 requestConfirmations = 3;
     uint32 numWords = 1;
-    address linkAddress = 0xd14838A68E8AFBAdE5efb411d5871ea0011AFd28;
-    address wrapperAddress = 0x674Cda1Fef7b3aA28c535693D658B42424bb7dBD;
+    address linkAddress = 0xf97f4df75117a78c1A5a0DBb814Af92458539FB4;
+    address wrapperAddress = 0x2D159AE3bFf04a10A355B608D22BDEC092e934fa;
 
     //Colors of the rainbow
     enum ColorTypes {
@@ -63,12 +63,12 @@ contract ColorClash is
     }
 
     //events
-    event FetchingRandomNumber(uint256 roundNumber);
-    event RandomNumberReceived(uint256 roundNumber, uint256 randomNumber);
-    event RoundStarted(uint256 roundNumber, uint256 startTime, uint256 endTime);
-    event RoundColorDeduction(uint256 roundNumber, ColorTypes color, uint256 deduction, uint256 value);
-    event RoundEnded(uint256 roundNumber, RoundState status, ColorTypes winner, uint256 reward, uint256 value);
-    event Trade(address trader, ColorTypes color, bool isBuy, uint256 shareAmount, uint256 ethAmount, uint256 protocolEthAmount, uint256 supply, uint256 value);
+    event FetchingRandomNumber(uint256 timestamp, uint256 roundNumber);
+    event RandomNumberReceived(uint256 timestamp, uint256 roundNumber, uint256 randomNumber);
+    event RoundStarted(uint256 timestamp, uint256 roundNumber, uint256 startTime, uint256 endTime);
+    event RoundColorDeduction(uint256 timestamp, uint256 roundNumber, ColorTypes color, uint256 deduction, uint256 value, uint256 supply);
+    event RoundEnded(uint256 timestamp, uint256 roundNumber, RoundState status, ColorTypes winner, uint256 reward, uint256 value, uint256 supply);
+    event Trade(uint256 timestamp, address trader, ColorTypes color, bool isBuy, uint256 shareAmount, uint256 ethAmount, uint256 protocolEthAmount, uint256 supply, uint256 value);
 
     //dApp state variables
     address public protocolFeeDestination;
@@ -106,11 +106,12 @@ contract ColorClash is
         _startNewRound();
     }
 
+    //Bonding curve is y=x;
     function getPrice(uint256 supply, uint256 amount) public pure returns (uint256) {
         uint256 sum1 = supply == 0 ? 0 : (supply - 1 )* (supply) * (2 * (supply - 1) + 1) / 6;
         uint256 sum2 = supply == 0 && amount == 1 ? 0 : (supply - 1 + amount) * (supply + amount) * (2 * (supply - 1 + amount) + 1) / 6;
         uint256 summation = sum2 - sum1;
-        return summation * 1 ether / 16000;
+        return summation * 1 ether / 100000000;
     }
 
     function getScalingFactor(ColorTypes color) public view returns (uint256) {
@@ -162,7 +163,7 @@ contract ColorClash is
         colors[color].supply = supply + amount;
         colors[color].value = colors[color].value + price;
         totalValueDeposited = totalValueDeposited + price;
-        emit Trade(msg.sender, color, true, amount, price, protocolFee, supply + amount, colors[color].value);
+        emit Trade(block.timestamp, msg.sender, color, true, amount, price, protocolFee, supply + amount, colors[color].value);
         (bool success1, ) = protocolFeeDestination.call{value: protocolFee}("");
         require(success1, "Unable to send funds");
     }
@@ -177,7 +178,7 @@ contract ColorClash is
         colors[color].supply = supply - amount;
         colors[color].value = colors[color].value - price;
         totalValueDeposited = totalValueDeposited - price;
-        emit Trade(msg.sender, color, false, amount, price, protocolFee, supply - amount, colors[color].value);
+        emit Trade(block.timestamp, msg.sender, color, false, amount, price, protocolFee, supply - amount, colors[color].value);
         (bool success1, ) = msg.sender.call{value: price - protocolFee}("");
         (bool success2, ) = protocolFeeDestination.call{value: protocolFee}("");
         require(success1 && success2, "Unable to send funds");
@@ -200,7 +201,7 @@ contract ColorClash is
         if (contributingColors == 0) {
             round.status = RoundState.NoContest;
             round.ended = true;
-            emit RoundEnded(currentRound, round.status, ColorTypes.None, 0, 0);
+            emit RoundEnded(block.timestamp, currentRound, round.status, ColorTypes.None, 0, 0, 0);
             _startNewRound();
             return;
         }
@@ -217,7 +218,7 @@ contract ColorClash is
             paid: VRF_V2_WRAPPER.calculateRequestPrice(callbackGasLimit),
             randomWords: new uint256[](numWords)
         });
-        emit FetchingRandomNumber(currentRound);
+        emit FetchingRandomNumber(block.timestamp, currentRound);
     }
 
     function fulfillRandomWords(
@@ -229,7 +230,7 @@ contract ColorClash is
         require(round.vrfRequestStatus.requestId == _requestId, "Request ID mismatch");
         round.vrfRequestStatus.randomWords = _randomWords;
 
-        emit RandomNumberReceived(currentRound, _randomWords[0]);
+        emit RandomNumberReceived(block.timestamp, currentRound, _randomWords[0]);
 
         _determineWinner();
         _startNewRound();
@@ -241,7 +242,7 @@ contract ColorClash is
         Round storage round = rounds[currentRound];
         round.vrfRequestStatus.randomWords = new uint256[](numWords);
         round.vrfRequestStatus.randomWords[0] = _randomWord;
-        emit RandomNumberReceived(currentRound, _randomWord);
+        emit RandomNumberReceived(block.timestamp, currentRound, _randomWord);
         _determineWinner();
         _startNewRound();
     }
@@ -273,7 +274,7 @@ contract ColorClash is
             uint256 deduction = color.value * deductionFee / 1 ether;
             colors[colorType].value = color.value - deduction;
             reward += deduction;
-            emit RoundColorDeduction(currentRound, colorType, deduction, colors[colorType].value);
+            emit RoundColorDeduction(block.timestamp, currentRound, colorType, deduction, colors[colorType].value, colors[colorType].supply);
             i++;
             
         }
@@ -282,7 +283,7 @@ contract ColorClash is
         colors[round.winner].value += reward;
         round.status = RoundState.Finished;
 
-        emit RoundEnded(currentRound, round.status, round.winner, reward, colors[round.winner].value);
+        emit RoundEnded(block.timestamp, currentRound, round.status, round.winner, reward, colors[round.winner].value, colors[round.winner].supply);
     }
 
     function _startNewRound() private {
@@ -291,7 +292,7 @@ contract ColorClash is
         rounds[currentRound].status = RoundState.Open;
         rounds[currentRound].ended = false;
         rounds[currentRound].winner = ColorTypes.None;
-        emit RoundStarted(currentRound, block.timestamp, gameEndTime);
+        emit RoundStarted(block.timestamp, currentRound, block.timestamp, gameEndTime);
     }
 
     function withdrawLink() public onlyOwner {
